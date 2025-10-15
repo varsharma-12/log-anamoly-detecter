@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kafka Connect Anomaly Detector Simulator</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f7f7f9;
+        }
+        .mono {
+            font-family: monospace;
+        }
+    </style>
+</head>
+<body class="p-4 md:p-8">
+    <script>
+        // Global state for the simulation
+        let logsSent = 0;
+        let simulationInterval;
+        let anomalyTimer;
+        
+        // KSQL Logic Simulation Variables
+        let windowStart = Date.now();
+        const WINDOW_SIZE_MS = 5000;
+        let errorCounts = {}; // { service: count }
+
+        const logLevels = ['INFO', 'INFO', 'INFO', 'INFO', 'INFO', 'WARNING', 'ERROR'];
+        const serviceNames = ['auth_service', 'billing_api', 'data_processor', 'frontend_server'];
+        
+        // --- Core KSQL Anomaly Detection Logic (Simulated) ---
+
+        /**
+         * Simulates the ksqlDB processing stream: Tumbling Window and Filter.
+         * @param {object} log - The log object {service, level, message}
+         */
+        function processLog(log) {
+            const now = Date.now();
+            
+            // 1. Tumbling Window Check
+            if (now >= windowStart + WINDOW_SIZE_MS) {
+                // Window has closed. Check for final anomalies from the closed window
+                checkAnomaly(windowStart, errorCounts);
+
+                // Reset for the new window
+                windowStart = now;
+                errorCounts = {};
+                updateKSQLDisplay("Resetting window...", true);
+            }
+            
+            // 2. Count Errors (KSQL Table: error_counts)
+            if (log.level === 'ERROR') {
+                errorCounts[log.service] = (errorCounts[log.service] || 0) + 1;
+                updateKSQLDisplay(`ERROR received for ${log.service}. Current window count: ${errorCounts[log.service]}`);
+            } else {
+                 updateKSQLDisplay(`Processed ${log.level} log.`);
+            }
+
+            // Update the real-time counts display immediately
+            renderCurrentErrorCounts();
+        }
+
+        /**
+         * Simulates the final Alert Stream filter (KSQL Stream: anomaly_alerts).
+         * @param {number} start - The start time of the window being checked.
+         * @param {object} counts - The final error counts for the window.
+         */
+        function checkAnomaly(start, counts) {
+            const anomalyThreshold = 5;
+            let foundAnomaly = false;
+
+            for (const service in counts) {
+                const count = counts[service];
+                if (count > anomalyThreshold) {
+                    foundAnomaly = true;
+                    // 3. Trigger Alert (Simulating HTTP Sink POST)
+                    const alert = {
+                        service: service,
+                        error_count: count,
+                        alert_message: "CRITICAL: High Error Rate Detected",
+                        window_start: new Date(start).toLocaleTimeString(),
+                        window_end: new Date(start + WINDOW_SIZE_MS).toLocaleTimeString()
+                    };
+                    displayAlert(alert);
+                }
+            }
+
+            if (!foundAnomaly) {
+                updateKSQLDisplay("Window closed. No anomalies detected.");
+            }
+        }
+        
+        // --- Simulation & UI Logic ---
+
+        function generateRandomLog(isAnomaly = false) {
+            const service = randomChoice(serviceNames);
+            let level, message;
+
+            if (isAnomaly) {
+                level = 'ERROR';
+                message = `Critical exception thrown during transaction processing! (Code: ${Math.floor(Math.random() * 999)})`;
+            } else {
+                level = randomChoice(logLevels.filter(l => l !== 'ERROR')); // Normal traffic shouldn't be error
+                if (level === 'INFO') {
+                    message = randomChoice(['Routine health check complete', 'API request processed', 'Database connection verified']);
+                } else {
+                    message = 'High latency warning issued.';
+                }
+            }
+
+            return {
+                timestamp: new Date().toISOString(),
+                service: service,
+                level: level,
+                message: message
+            };
+        }
+
+        function randomChoice(arr) {
+            return arr[Math.floor(Math.random() * arr.length)];
+        }
+
+        function startSimulation() {
+            if (simulationInterval) {
+                stopSimulation();
+                return;
+            }
+
+            const simButton = document.getElementById('simulateButton');
+            simButton.classList.remove('bg-green-600', 'hover:bg-green-700');
+            simButton.classList.add('bg-red-600', 'hover:bg-red-700');
+            simButton.textContent = 'Stop Simulation';
+            
+            logsSent = 0;
+            document.getElementById('log-input').value = ''; // Clear input area
+            document.getElementById('log-input').disabled = true;
+
+            // Start sending normal logs quickly (Simulating Source Connector polling)
+            simulationInterval = setInterval(sendLog, 200);
+
+            // Schedule an anomaly burst every 15-20 seconds
+            anomalyTimer = setInterval(injectAnomaly, 17000); 
+
+            updateKSQLDisplay("Simulation started. Logs are being ingested by the Source Connector.", true);
+            document.getElementById('alert-output').innerHTML = ''; // Clear alerts
+        }
+
+        function stopSimulation() {
+            clearInterval(simulationInterval);
+            clearInterval(anomalyTimer);
+            simulationInterval = null;
+            anomalyTimer = null;
+
+            const simButton = document.getElementById('simulateButton');
+            simButton.classList.remove('bg-red-600', 'hover:bg-red-700');
+            simButton.classList.add('bg-green-600', 'hover:bg-green-700');
+            simButton.textContent = 'Start Simulation';
+            document.getElementById('log-input').disabled = false;
+        }
+
+        /**
+         * Simulates the Source Connector writing a log to the topic.
+         */
+        function sendLog() {
+            const logData = generateRandomLog();
+            const logString = JSON.stringify(logData);
+            
+            // Append to simulated log file (UI)
+            const logInput = document.getElementById('log-input');
+            logInput.value += logString + '\n';
+            logInput.scrollTop = logInput.scrollHeight;
+
+            // Simulate Ingestion and Processing
+            processLog(logData);
+            logsSent++;
+            document.getElementById('log-count').textContent = logsSent;
+        }
+
+        /**
+         * Injects a rapid burst of errors for one service to trigger the anomaly.
+         */
+        function injectAnomaly() {
+            const targetService = randomChoice(serviceNames);
+            const burstSize = 7; // Must be > 5 to trigger the rule
+            
+            updateKSQLDisplay(`\n*** INJECTING ANOMALY BURST (${burstSize} ERRORS) for ${targetService} ***`, true);
+
+            let burstCounter = 0;
+            const burstInterval = setInterval(() => {
+                if (burstCounter < burstSize) {
+                    const logData = generateRandomLog(true);
+                    logData.service = targetService; // Force the target service
+                    
+                    const logString = JSON.stringify(logData);
+                    
+                    const logInput = document.getElementById('log-input');
+                    logInput.value += logString + '\n';
+                    logInput.scrollTop = logInput.scrollHeight;
+
+                    processLog(logData);
+                    logsSent++;
+                    document.getElementById('log-count').textContent = logsSent;
+                    burstCounter++;
+                } else {
+                    clearInterval(burstInterval);
+                    updateKSQLDisplay(`Anomaly burst complete. Waiting for the window to close...`);
+                }
+            }, 100); // Rapid firing
+        }
+
+        // --- UI Rendering Functions ---
+
+        function updateKSQLDisplay(message, isReset = false) {
+            const logDiv = document.getElementById('ksql-log');
+            if (isReset) {
+                logDiv.innerHTML = `<div class="text-xs text-gray-500 mb-2">Window opens at: ${new Date(windowStart).toLocaleTimeString()}</div>`;
+            }
+
+            const time = new Date().toLocaleTimeString();
+            const logEntry = `<div class="text-xs mono">${time}: ${message}</div>`;
+            logDiv.innerHTML = logEntry + logDiv.innerHTML;
+        }
+
+        function renderCurrentErrorCounts() {
+            const countDiv = document.getElementById('current-error-counts');
+            let html = `<div class="text-sm font-semibold mb-2">Window Status (Ends: ${new Date(windowStart + WINDOW_SIZE_MS).toLocaleTimeString()})</div>`;
+            
+            const services = serviceNames.map(name => ({
+                name: name,
+                count: errorCounts[name] || 0
+            }));
+            
+            const totalErrors = services.reduce((sum, s) => sum + s.count, 0);
+
+            if (totalErrors === 0) {
+                 html += `<div class="text-xs text-green-500">No errors detected in the current window.</div>`;
+            } else {
+                services.sort((a, b) => b.count - a.count).forEach(s => {
+                    const color = s.count >= 5 ? 'text-red-500 font-bold' : (s.count > 0 ? 'text-yellow-600' : 'text-gray-500');
+                    html += `<div class="flex justify-between text-sm ${color}">
+                                <span>${s.name}:</span>
+                                <span>${s.count} / 5</span>
+                            </div>`;
+                });
+            }
+            countDiv.innerHTML = html;
+        }
+
+        /**
+         * Simulates the HTTP Sink Connector POSTing the alert to a WebHook.
+         */
+        function displayAlert(alert) {
+            const alertOutput = document.getElementById('alert-output');
+            const alertHTML = `
+                <div class="bg-red-50 border-l-4 border-red-500 p-4 mb-3 rounded-lg shadow-md">
+                    <div class="flex items-center">
+                        <svg class="h-6 w-6 text-red-500 mr-2" fill="currentColor" viewBox="0 0 20 20">
+                            <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clip-rule="evenodd" />
+                        </svg>
+                        <div class="font-bold text-red-700">ANOMALY DETECTED</div>
+                    </div>
+                    <div class="mt-2 text-sm text-red-600 mono">
+                        <p class="font-semibold">${alert.alert_message}</p>
+                        <p>Service: <span class="font-bold">${alert.service}</span></p>
+                        <p>Count: <span class="font-bold">${alert.error_count} ERRORS</span> (Threshold: 5)</p>
+                        <p>Window: ${alert.window_start} - ${alert.window_end}</p>
+                    </div>
+                </div>
+            `;
+            alertOutput.innerHTML = alertHTML + alertOutput.innerHTML;
+            
+            updateKSQLDisplay(`!!! ALERT FIRED for ${alert.service} (${alert.error_count} errors) !!!`);
+        }
+
+        // Initial rendering on load
+        window.onload = () => {
+            renderCurrentErrorCounts();
+        };
+
+    </script>
+
+    <header class="mb-6">
+        <h1 class="text-3xl font-bold text-gray-800 mb-2">Real-Time Anomaly Detector (Connector Demo)</h1>
+        <p class="text-gray-600">Simulating data flow from a **FileStream Source Connector** through a **ksqlDB** rule to an **HTTP Sink Connector**.</p>
+    </header>
+
+    <!-- Control Panel -->
+    <div class="bg-white p-5 rounded-xl shadow-lg mb-6 flex justify-between items-center flex-wrap gap-4">
+        <div class="flex items-center space-x-4">
+            <button id="simulateButton" onclick="startSimulation()" 
+                    class="px-6 py-3 rounded-xl font-bold text-white transition duration-300 ease-in-out shadow-lg bg-green-600 hover:bg-green-700">
+                Start Simulation
+            </button>
+            <div class="text-lg font-semibold text-gray-700">
+                Total Logs Sent: <span id="log-count" class="text-blue-600">0</span>
+            </div>
+        </div>
+        <div class="text-sm text-gray-500">
+            Anomaly Rule: > 5 Errors per Service in a 5-second window.
+        </div>
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+        <!-- 1. Source Connector & Log File (Input) -->
+        <div class="lg:col-span-1 bg-white rounded-xl shadow-lg p-5 flex flex-col h-full">
+            <h2 class="text-xl font-semibold text-gray-800 mb-4 border-b pb-2">1. Source Connector (Input)</h2>
+            <div class="text-sm text-gray-600 mb-3">
+                <span class="font-bold text-blue-600">FileStreamSource</span> is reading and publishing new lines to the `software_logs` topic.
+            </div>
+            <textarea id="log-input" class="mono w-full flex-grow border border-gray-300 p-3 text-xs rounded-lg bg-gray-50 resize-none" readonly rows="10" placeholder="Simulated app_simulation.log content will appear here..."></textarea>
+        </div>
+
+        <!-- 2. KSQL Processor (Logic) -->
+        <div class="lg:col-span-1 bg-white rounded-xl shadow-lg p-5 flex flex-col h-full">
+            <h2 class="text-xl font-semibold text-gray-800 mb-4 border-b pb-2">2. ksqlDB Engine (Logic)</h2>
+            <div class="text-sm text-gray-600 mb-3">
+                Real-time processing: Counting errors in a 5-second tumbling window.
+            </div>
+            
+            <!-- Real-Time Counts -->
+            <div id="current-error-counts" class="bg-gray-100 p-3 rounded-lg mb-4 h-32 overflow-y-auto">
+                <!-- Counts injected here -->
+            </div>
+
+            <!-- ksqlDB Activity Log -->
+            <div class="flex-grow min-h-[10rem]">
+                <h3 class="font-medium text-gray-700 mb-2">KSQL Activity Log:</h3>
+                <div id="ksql-log" class="mono text-xs bg-gray-800 text-white p-3 rounded-lg overflow-y-auto max-h-48">
+                    <div class="text-center text-gray-400">Press 'Start Simulation' to begin streaming.</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 3. Sink Connector & Alert Delivery (Output) -->
+        <div class="lg:col-span-1 bg-white rounded-xl shadow-lg p-5 flex flex-col h-full">
+            <h2 class="text-xl font-semibold text-gray-800 mb-4 border-b pb-2">3. Sink Connector (Alerts)</h2>
+            <div class="text-sm text-gray-600 mb-3">
+                <span class="font-bold text-red-600">HTTP Sink Connector</span> is posting alerts from `anomaly_alerts` to a WebHook.
+            </div>
+            <div id="alert-output" class="flex-grow min-h-[20rem] overflow-y-auto p-2 border border-dashed border-gray-300 rounded-lg bg-red-50">
+                <div class="text-center text-gray-400 text-sm py-10">Confirmed anomalies will appear here (Simulated WebHook Payload).</div>
+            </div>
+        </div>
+
+    </div>
+</body>
+</html>
