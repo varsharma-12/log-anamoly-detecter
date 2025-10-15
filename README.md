@@ -1,36 +1,87 @@
-# Real-Time Anomaly Detection using Kafka Connectors
+# Real-Time Anomaly Detection using KsqlDB and Kafka Connectors
 
-This guide details the steps and configuration required to implement the Log Anomaly Detection architecture using Kafka Connect, replacing the custom Python Producer and Consumer scripts.
+This guide provides the complete, sequential steps for setting up the anomaly detection architecture in Confluent Cloud using ksqlDB and Managed Connectors.
+# Phase 1: Confluent Cloud Preparation
 
-Prerequisites:
+These steps ensure your cluster environment is ready.
+1. Set Up Cluster and API Keys
 
-    A running Kafka Cluster (Confluent Cloud or self-managed).
+    Ensure you have an active Kafka Cluster (Basic or Standard is sufficient).
 
-    The following topics already exist: software_logs, anomaly_alerts.
+    Create an API Key and Secret pair for your Kafka cluster and keep them safe.
 
-    The ksqlDB processing stream from the previous step is deployed and running.
+2. Create Required Topics
 
-    Access to a Kafka Connect cluster or the Confluent Cloud Connect UI.
+Create the following two topics manually in your Confluent Cloud cluster:
 
-# Step 1: Configure the Source Connector (Ingestion)
+Topic Name
+	
+software_logs (The raw input for logs (produced by the Source Connector).)
 
-This connector will watch a local file (simulating your application's log file) and continuously stream its new content into the software_logs Kafka topic.
-# A. Prepare the Simulated Log File
+anomaly_alerts (The filtered output of the ksqlDB rule (consumed by the Sink Connector).)
+	
 
-For a real-world scenario, the source connector would attach directly to the live log output. For a local test, create a file named app_simulation.log with some initial data:
+# Phase 2: Deploy ksqlDB Processing Stream (The Intelligence)
+
+Execute these three commands sequentially in your ksqlDB Editor on Confluent Cloud.
+# A. Define the Input Stream
+
+This tells ksqlDB how to read the JSON logs from the software_logs topic.
+```
+CREATE STREAM log_stream (
+    timestamp VARCHAR,
+    service VARCHAR,
+    level VARCHAR,
+    message VARCHAR
+) WITH (
+    KAFKA_TOPIC='software_logs',
+    VALUE_FORMAT='JSON'
+);
+```
+# B. Create the Real-Time Error Counting Table
+
+This stateful logic defines the 5-second Tumbling Window aggregation for 'ERROR' messages per service.
+```
+CREATE TABLE error_counts AS
+  SELECT
+    service,
+    COUNT(*) AS error_count
+  FROM log_stream
+  WINDOW TUMBLING (SIZE 5 SECONDS)
+  WHERE level = 'ERROR'
+  GROUP BY service
+  EMIT CHANGES;
+```
+# C. Create the Anomaly Alert Output Stream
+
+This is the final detection rule: filtering the counts to only alert when the count is greater than 5.
+```
+CREATE STREAM anomaly_alerts WITH (KAFKA_TOPIC='anomaly_alerts') AS
+  SELECT
+    service,
+    error_count,
+    'CRITICAL: High Error Rate Detected' AS alert_message,
+    TIMESTAMPTOSTRING(WINDOWSTART, 'yyyy-MM-dd HH:mm:ss Z') AS window_start
+  FROM error_counts
+  WHERE error_count > 5
+  EMIT CHANGES;
+```
+# Phase 3: Configure the Source Connector (Ingestion)
+
+This step simulates the log producer by reading from a file and writing into Kafka.
+1. Prepare Local Log File
+
+Create a file named app_simulation.log on your machine where the connector will run:
 
 ```
-
 {"timestamp":"2025-10-15T12:00:00","service":"auth_service","level":"INFO","message":"User login successful"}
 {"timestamp":"2025-10-15T12:00:01","service":"billing_api","level":"INFO","message":"Request completed in 120ms"}
-```
-# B. Source Connector Configuration (FileStreamSource)
-
-Use the following configuration to set up the connector. Remember to replace [PATH_TO_FILE] with the absolute path to your app_simulation.log file.
-
-Goal: Read app_simulation.log and write the JSON lines to the software_logs topic.
-
 ````
+2. Deploy the FileStreamSource Connector
+
+Use the Confluent Cloud Connector UI or API to deploy this configuration. Replace [PATH_TO_FILE] with the absolute path to your app_simulation.log.
+
+```
 {
   "name": "LogFileSourceConnector",
   "config": {
@@ -48,30 +99,17 @@ Goal: Read app_simulation.log and write the JSON lines to the software_logs topi
     "name": "LogFileSourceConnector"
   }
 }
-````
+```
+# Phase 4: Configure the Sink Connector (Alert Delivery)
 
-# Step 2: KSQL Real-Time Processing (Detection Core)
+This step automates alert delivery to an external system (e.g., PagerDuty, Slack via WebHook).
+# 1. Obtain WebHook URL
 
-This step remains unchanged from the previous implementation. The ksqlDB logic is responsible for the stateful, real-time calculation and detection.
+Get the API endpoint (WebHook URL) for the system where you want the alerts delivered.
+# 2. Deploy the HTTP Sink Connector
 
-Logic Recap:
-
-    Input: Stream data from the software_logs topic.
-
-    Windowing: Calculate COUNT(*) of 'ERROR' messages within a 5-second tumbling window, grouped by service.
-
-    Alerting: Filter the windowed counts where error_count > 5 and publish the result to the anomaly_alerts topic.
-
-# Step 3: Configure the Sink Connector (Alert Delivery)
-
-This connector will automatically read the confirmed anomaly events from the anomaly_alerts topic and forward them to an external system, such as a monitoring tool or a WebHook that triggers a Slack message (replacing consumer.py).
-A. Sink Connector Configuration (HTTP Sink)
-
-This example uses a generic HTTP Sink Connector to send the JSON alert payload to an external WebHook endpoint. You would replace [YOUR_ALERT_WEBHOOK_URL] with the actual URL (e.g., PagerDuty, Datadog, or a custom notification service).
-
-Goal: Read the JSON alerts from the anomaly_alerts topic and POST them to a WebHook.
-
-````
+Use the Confluent Cloud Connector UI or API. Replace [YOUR_ALERT_WEBHOOK_URL] with the actual destination URL.
+```
 {
   "name": "AnomalyAlertHTTPSink",
   "config": {
@@ -94,26 +132,24 @@ Goal: Read the JSON alerts from the anomaly_alerts topic and POST them to a WebH
     "name": "AnomalyAlertHTTPSink"
   }
 }
-````
+```
+# Phase 5: Test the Pipeline (Trigger Anomaly)
 
-B. Triggering an Anomaly with the Source Connector
+Start both the Source Connector and the Sink Connector.
 
-To trigger a test alert:
+Manually append 6 or more ERROR lines for the same service (e.g., billing_api) to your app_simulation.log file within a short time frame (less than 5 seconds).
 
-    Start both connectors.
+Example lines to append:
+```
+    {"timestamp":"2025-10-15T12:00:10","service":"billing_api","level":"ERROR","message":"DB connection failed"}
+    {"timestamp":"2025-10-15T12:00:10","service":"billing_api","level":"ERROR","message":"DB connection failed"}
+    {"timestamp":"2025-10-15T12:00:11","service":"billing_api","level":"ERROR","message":"DB connection failed"}
+    {"timestamp":"2025-10-15T12:00:11","service":"billing_api","level":"ERROR","message":"DB connection failed"}
+    {"timestamp":"2025-10-15T12:00:12","service":"billing_api","level":"ERROR","message":"DB connection failed"}
+    {"timestamp":"2025-10-15T12:00:12","service":"billing_api","level":"ERROR","message":"DB connection failed"}
+```
+The HTTP Sink Connector will automatically fire the alert to your WebHook within seconds!
 
-    Manually append several ERROR lines for the same service (e.g., billing_api) to your app_simulation.log file within a short time (e.g., 5 seconds).
-
-````
-{"timestamp":"2025-10-15T12:00:10","service":"billing_api","level":"ERROR","message":"Transaction failure: lock timeout"}
-{"timestamp":"2025-10-15T12:00:10","service":"billing_api","level":"ERROR","message":"Transaction failure: lock timeout"}
-{"timestamp":"2025-10-15T12:00:10","service":"billing_api","level":"ERROR","message":"Transaction failure: lock timeout"}
-{"timestamp":"2025-10-15T12:00:11","service":"billing_api","level":"ERROR","message":"Transaction failure: lock timeout"}
-{"timestamp":"2025-10-15T12:00:12","service":"billing_api","level":"ERROR","message":"Transaction failure: lock timeout"}
-{"timestamp":"2025-10-15T12:00:12","service":"billing_api","level":"ERROR","message":"Transaction failure: lock timeout"}
-````
-
-The Source Connector will detect these new lines, write them to software_logs, ksqlDB will count them, and the Sink Connector will deliver the final alert via HTTP.
 
 
 self-contained HTML application can be accessed using index.html file  that simulates the entire end-to-end flow described.
