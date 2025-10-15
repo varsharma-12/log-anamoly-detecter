@@ -114,3 +114,6 @@ To trigger a test alert:
 ````
 
 The Source Connector will detect these new lines, write them to software_logs, ksqlDB will count them, and the Sink Connector will deliver the final alert via HTTP.
+
+
+self-contained HTML application can be accessed using index.html file  that simulates the entire end-to-end flow described.
