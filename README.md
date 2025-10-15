@@ -117,3 +117,4 @@ The Source Connector will detect these new lines, write them to software_logs, k
 
 
 self-contained HTML application can be accessed using index.html file  that simulates the entire end-to-end flow described.
+Download the [index.html](https://github.com/varsharma-12/log-anamoly-detecter/blob/main/index.html) and run it in a browser to see a simulated environment.
