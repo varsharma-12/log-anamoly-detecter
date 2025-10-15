@@ -25,6 +25,7 @@ Go to a free testing service like webhook.site or requestbin.com and copy the un
 
 This setup uses:
 Alert Destination URL: https://webhook.site/e6c81441-80dd-4f73-a171-70592a7a1e2b
+https://webhook.site/#!/view/e6c81441-80dd-4f73-a171-70592a7a1e2b/b32b3a6f-d48f-4308-a237-a25a359a608d/1
 
 # Phase 2: Deploy ksqlDB Logic (The Intelligence)
 
